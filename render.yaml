@@ -1,7 +1,8 @@
 services:
   - type: web
-    name: weott-proposal-engine
+    name: stargtm-kkzz
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120
+    # Live URL: https://stargtm-kkzz.onrender.com

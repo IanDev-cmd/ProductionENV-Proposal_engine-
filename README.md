@@ -2,7 +2,8 @@
 
 Production deployment of the West End on the Thames PDF proposal orchestrator.
 
-**Source of truth (app monorepo):** https://github.com/IanDev-cmd/proposal-builder-  
+**Live backend URL:** https://stargtm-kkzz.onrender.com  
+**App monorepo:** https://github.com/IanDev-cmd/proposal-builder-  
 **This repo:** production-ready engine package (templates, inserts, Flask API).
 
 ## Deploy
@@ -12,6 +13,8 @@ pip install -r requirements.txt
 gunicorn app:app
 # or: python app.py
 ```
+
+Render service should serve at **https://stargtm-kkzz.onrender.com**.
 
 ## Endpoints
 
@@ -24,4 +27,6 @@ gunicorn app:app
 
 - `PORT` — listen port (default 8000)
 
-Wired from n8n `QuoteBuilder` → `POST /generate`.
+## n8n
+
+`QuoteBuilder` HTTP Request node → `POST https://stargtm-kkzz.onrender.com/generate`
