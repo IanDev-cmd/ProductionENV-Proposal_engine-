@@ -169,8 +169,141 @@ def format_guest_range(value) -> str:
     return raw
 
 
+_PHONE_PLACEHOLDERS = {"", "—", "-", "–", "n/a", "na", "none", "tbc"}
+_PHONE_LABEL_RE = re.compile(r"^\s*(?:t|m|tel|mob(?:ile)?|phone)\s*[:.\-]?\s*", re.I)
+_LABELED_PHONE_RE = re.compile(
+    r"(?:^|[\s,;/|])(?:(tel|t)|(mobile|mob|m))\s*[:.\-]?\s*([\d+()\s.-]{7,})",
+    re.I,
+)
+
+
+def strip_phone_label(raw: str) -> str:
+    return _PHONE_LABEL_RE.sub("", str(raw or "")).strip()
+
+
+def _phone_digits(raw: str) -> str:
+    d = re.sub(r"\D", "", str(raw or ""))
+    if d.startswith("44") and len(d) > 10:
+        d = d[2:]
+    if d and not d.startswith("0") and len(d) == 10:
+        d = "0" + d
+    return d
+
+
+def format_uk_phone(raw) -> str:
+    """House-style UK number. Never includes T: / M: labels."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if s.lower() in _PHONE_PLACEHOLDERS:
+        return "—" if s == "—" else ""
+    stripped = strip_phone_label(s)
+    if stripped.lower() in _PHONE_PLACEHOLDERS:
+        return "—" if stripped == "—" else ""
+    d = _phone_digits(stripped)
+    if len(d) != 11:
+        return stripped
+    if d.startswith("02"):
+        return f"{d[:3]} {d[3:7]} {d[7:]}"
+    if d.startswith(("07", "03")):
+        return f"{d[:5]} {d[5:8]} {d[8:]}"
+    if d.startswith("08"):
+        return f"{d[:4]} {d[4:7]} {d[7:]}"
+    if d.startswith("01"):
+        if d[1:3] in ("11", "21", "31", "41", "51", "61", "71", "81", "91"):
+            return f"{d[:4]} {d[4:7]} {d[7:]}"
+        return f"{d[:5]} {d[5:8]} {d[8:]}"
+    return f"{d[:5]} {d[5:8]} {d[8:]}"
+
+
+def parse_phone_fields(raw) -> dict:
+    """Split CRM blobs such as 'T: 03309 005 500 M: 07407 780 281'."""
+    text = str(raw or "").strip()
+    if not text:
+        return {"landline": "", "mobile": "", "display": "", "telephone": ""}
+    if text == "—":
+        return {"landline": "", "mobile": "", "display": "—", "telephone": "—"}
+
+    landline = ""
+    mobile = ""
+    extras = []
+    for match in _LABELED_PHONE_RE.finditer(text):
+        formatted = format_uk_phone(match.group(3))
+        if match.group(1):
+            landline = landline or formatted
+        elif match.group(2):
+            mobile = mobile or formatted
+
+    remainder = _LABELED_PHONE_RE.sub(" ", text)
+    remainder = re.sub(r"\b(?:t|m|tel|mob(?:ile)?|phone)\s*[:.\-]?\s*", " ", remainder, flags=re.I)
+    for part in re.split(r"\s*(?:[/|,;]|\band\b)\s*", remainder, flags=re.I):
+        if re.search(r"\d", part or ""):
+            formatted = format_uk_phone(part)
+            if formatted and formatted not in extras:
+                extras.append(formatted)
+
+    def _kind(formatted: str) -> str:
+        d = _phone_digits(formatted)
+        if d.startswith("07"):
+            return "mobile"
+        if len(d) >= 10:
+            return "landline"
+        return ""
+
+    if not landline and not mobile and not extras:
+        one = format_uk_phone(text)
+        if _kind(one) == "mobile":
+            mobile = one
+        else:
+            landline = one
+    else:
+        for extra in extras:
+            kind = _kind(extra)
+            if kind == "mobile" and not mobile:
+                mobile = extra
+            elif not landline:
+                landline = extra
+            elif not mobile:
+                mobile = extra
+
+    display = " / ".join(p for p in (landline, mobile) if p)
+    return {
+        "landline": landline,
+        "mobile": mobile,
+        "display": display,
+        "telephone": landline or mobile,
+    }
+
+
+_STAFF_FULL_NAMES = {
+    "natasha": "Natasha Minter",
+    "katherine": "Katherine Bulaon",
+    "sapphire": "Sapphire Adams",
+    "elizabeth": "Elizabeth Hillier",
+    "ellie": "Ellie Kirotar",
+    "lily-may": "Lily-May Cameron",
+    "lily may": "Lily-May Cameron",
+}
+
+
+def format_prepared_by_name(raw: str) -> str:
+    s = re.sub(r"^\s*prepared\s+by\s+", "", str(raw or "").strip(), flags=re.I).strip()
+    if "|" in s:
+        s = s.split("|", 1)[0].strip()
+    s = " ".join(s.split())
+    key = s.lower()
+    if key in _STAFF_FULL_NAMES:
+        return _STAFF_FULL_NAMES[key]
+    first = key.split()[0] if key else ""
+    if first in _STAFF_FULL_NAMES and " " not in s:
+        return _STAFF_FULL_NAMES[first]
+    return s
+
+
 def normalize_cover_lead(lead: dict) -> dict:
     out = dict(lead)
+    if "prepared_by" in out:
+        out["prepared_by"] = format_prepared_by_name(out.get("prepared_by") or "")
     if "event_date" in out:
         out["event_date"] = format_event_date(out["event_date"])
     if "event_timings" in out:
@@ -181,6 +314,17 @@ def normalize_cover_lead(lead: dict) -> dict:
         out["event_timings"] = formatted
     if "quote_date" in out:
         out["quote_date"] = format_quote_date(out["quote_date"])
+    if "telephone" in out:
+        parsed = parse_phone_fields(out.get("telephone"))
+        out["telephone"] = parsed["display"] or parsed["telephone"]
+    if "contact_phone" in out:
+        parsed = parse_phone_fields(out.get("contact_phone"))
+        out["contact_phone"] = parsed["landline"] or parsed["telephone"]
+        if parsed["mobile"] and not out.get("contact_mobile"):
+            out["contact_mobile"] = parsed["mobile"]
+    if "contact_mobile" in out:
+        parsed = parse_phone_fields(out.get("contact_mobile"))
+        out["contact_mobile"] = parsed["mobile"] or parsed["telephone"]
     if "guest_range" in out:
         out["guest_range"] = format_guest_range(out["guest_range"])
     if "guest_quote_n" in out:
@@ -271,6 +415,12 @@ def fill_contact_page(doc, data: dict, font_mgr, warnings: list, profile=None):
         value = str(data[field_name])
         if field_name == "contact_email":
             value = re.sub(r"^\s*E:\s*", "", value, flags=re.I)
+        elif field_name == "contact_phone":
+            parsed = parse_phone_fields(value)
+            value = parsed["landline"] or parsed["telephone"]
+        elif field_name == "contact_mobile":
+            parsed = parse_phone_fields(value)
+            value = parsed["mobile"] or parsed["telephone"]
         page = doc[page_i]
         font_mgr.ensure_registered(page)
         item = prepare_field_draw(spec, value, font_mgr, warnings, field_name)
