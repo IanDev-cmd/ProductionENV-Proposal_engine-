@@ -36,6 +36,7 @@ class GenerateLead(BaseModel):
     email: str | None = None
     event_type: str | None = None
     event_date: str | None = None  # ISO-8601 preferred (YYYY-MM-DD or full datetime)
+    date_flexible: bool | None = None
     event_timings: str | None = None
     guest_range: str | None = None
     guest_quote_n: str | int | float | None = None
@@ -44,6 +45,19 @@ class GenerateLead(BaseModel):
     contact_phone: str | None = None
     contact_mobile: str | None = None
     contact_email: str | None = None
+    quote_version: str | None = None
+    key_items: str | None = None
+    weekly_period: str | None = None
+    day_period: str | None = None
+    group_bracket: str | None = None
+    no_of_tables: str | int | float | None = None
+    budget: str | None = None
+    vessels: str | None = None
+    market: str | None = None
+    source: str | None = None
+    year_of_event: str | int | float | None = None
+    repeat_client: str | bool | None = None
+    agent: str | None = None
 
 
 class Calculations(BaseModel):

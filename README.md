@@ -2,7 +2,7 @@
 
 Production deployment of the West End on the Thames PDF proposal orchestrator.
 
-**Live backend URL:** https://stargtm-kkzz.onrender.com  
+**Live backend URL:** https://weott-proposal-engine.onrender.com  
 **App monorepo:** https://github.com/IanDev-cmd/proposal-builder-  
 **This repo:** production-ready engine package (templates, inserts, Flask API).
 
@@ -14,7 +14,7 @@ gunicorn app:app
 # or: python app.py
 ```
 
-Render service should serve at **https://stargtm-kkzz.onrender.com**.
+Render service should serve at **https://weott-proposal-engine.onrender.com**.
 
 ## Endpoints
 
@@ -29,4 +29,10 @@ Render service should serve at **https://stargtm-kkzz.onrender.com**.
 
 ## n8n
 
-`QuoteBuilder` HTTP Request node → `POST https://stargtm-kkzz.onrender.com/generate`
+Live instance: `https://prometheus5.app.n8n.cloud`  
+`QuoteBuilder` HTTP Request node → `POST https://weott-proposal-engine.onrender.com/generate`
+
+Credentials bound on that n8n instance:
+
+- `googlePalmApi` `zvFDkn9Cp7SqbA1q` — Google Gemini(PaLM) Api account
+- `googleSheetsOAuth2Api` `9DvsM5k7IUgWQ5Bf` — Google Sheets account
