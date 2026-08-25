@@ -91,7 +91,6 @@ class GeneratePayload(BaseModel):
     selected_inserts: list[str] | None = None
     packageWording: dict[str, Any] = Field(default_factory=dict)
     menuLinks: dict[str, Any] = Field(default_factory=dict)
-    mode: str | None = None
 
 
 def validation_error_body(exc: ValidationError) -> dict[str, Any]:

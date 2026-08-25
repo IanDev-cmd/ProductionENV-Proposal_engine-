@@ -104,6 +104,7 @@ def build_proposal(payload: dict, template_path: str | None, output_path: str) -
     render_upgrade_list(doc, selected_upgrades, font_mgr, warnings, profile=profile)
 
     if package_wording:
+        # Overlay itinerary timings only — template package columns stay intact.
         render_package_columns(doc, package_wording, font_mgr, warnings, profile=profile)
 
     if menu_links:

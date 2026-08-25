@@ -1,7 +1,8 @@
 """
 app.py
 ------
-Web wrapper around engine.build_proposal() for Render / n8n.
+Web wrapper around engine.build_proposal() for Render.
+The React workspace SPA calls POST /generate directly (no n8n hop).
 
 ENDPOINTS
     GET  /               health
@@ -32,6 +33,33 @@ from pydantic import ValidationError
 
 app = Flask(__name__)
 _BASE = Path(__file__).resolve().parent
+
+_CORS_HEADERS = (
+    "Content-Type, Accept",
+)
+_CORS_EXPOSE = (
+    "Content-Disposition, Content-Type, X-Warnings, X-Using-Brand-Font, "
+    "X-Page-Count, X-Template-Id, X-Template-Matched-By, X-Inserts"
+)
+
+
+@app.before_request
+def _cors_preflight():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+
+@app.after_request
+def _cors(resp):
+    origin = request.headers.get("Origin") or "*"
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = _CORS_HEADERS[0]
+    resp.headers["Access-Control-Expose-Headers"] = _CORS_EXPOSE
+    resp.headers["Access-Control-Max-Age"] = "86400"
+    resp.headers["Vary"] = "Origin"
+    return resp
+
 
 _WARM = {"ok": False, "error": None, "templates_warmed": 0}
 

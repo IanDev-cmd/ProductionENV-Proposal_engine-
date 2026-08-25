@@ -27,12 +27,13 @@ Render service should serve at **https://weott-proposal-engine.onrender.com**.
 
 - `PORT` — listen port (default 8000)
 
-## n8n
+## Callers
 
-Live instance: `https://harmonyproxy.app.n8n.cloud` (`0b033e4dea3e06f7022fa976138770d89a94a569a45a7883de93bf9335d36920`)  
-`QuoteBuilder` HTTP Request node → `POST https://weott-proposal-engine.onrender.com/generate`
+The React workspace SPA posts to `POST /generate` directly (CORS enabled). Do not route PDFs through n8n.
 
-Credentials bound on that n8n instance:
+n8n `https://harmonyproxy.app.n8n.cloud` remains only for Gemini:
 
-- `googlePalmApi` `dlay23hFXEWTtpXH` — Google Gemini(PaLM) Api account
-- `googleSheetsOAuth2Api` `GZhF0w9mcVHkFaHo` — Google Sheets account
+- `PrefillHealer`
+- `LeadNotesSummary`
+
+Google Sheets OAuth on that instance is unused after the Apps Script cutover.
