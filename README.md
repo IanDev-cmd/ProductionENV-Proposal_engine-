@@ -29,7 +29,7 @@ Render service should serve at **https://weott-proposal-engine.onrender.com**.
 
 ## n8n
 
-Live instance: `https://harmony9.app.n8n.cloud` (`0b033e4dea3e06f7022fa976138770d89a94a569a45a7883de93bf9335d36920`)  
+Live instance: `https://harmonyproxy.app.n8n.cloud` (`0b033e4dea3e06f7022fa976138770d89a94a569a45a7883de93bf9335d36920`)  
 `QuoteBuilder` HTTP Request node → `POST https://weott-proposal-engine.onrender.com/generate`
 
 Credentials bound on that n8n instance:
