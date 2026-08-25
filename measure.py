@@ -152,8 +152,17 @@ def _value_after_label(spans, label_substr, *, value_same_line=True, panel_right
         if "|" in text and text.strip().endswith("|"):
             nxt = _next_same_line(spans, i)
             if nxt is not None:
+                cap = _same_line_label_cap(spans, i + 1, panel_right) if panel_right else None
                 nxt2 = _next_same_line(spans, i + 1)
-                return _span_field(nxt, next_sp=nxt2, max_x1=panel_right)
+                if cap is not None and nxt2 is not None:
+                    t2 = (nxt2.get("text") or "").strip().lower()
+                    if t2.startswith("|") or t2.startswith("client"):
+                        nxt2 = _next_same_line(spans, i + 2)
+                return _span_field(
+                    nxt,
+                    next_sp=nxt2,
+                    max_x1=cap if cap is not None else panel_right,
+                )
 
         # Case B: 'Prepared by NAME' — name is next span
         if label_substr_l.startswith("prepared by") and text.strip().lower().endswith("prepared by"):
@@ -191,6 +200,33 @@ def _value_after_label(spans, label_substr, *, value_same_line=True, panel_right
         if nxt is not None:
             nxt2 = _next_same_line(spans, i + 1)
             return _span_field(nxt, next_sp=nxt2, max_x1=panel_right)
+
+    # Case E: fragmented label across same-line spans
+    # e.g. "Proposal/Quotation " + "R" + "ef |" + " WE.9055"
+    label_compact = re.sub(r"\s+", "", label_substr_l)
+    for i, sp in enumerate(spans):
+        joined = sp["text"]
+        end = i
+        while end - i <= 8:
+            compact = re.sub(r"\s+", "", joined.lower())
+            if label_compact in compact and "|" in joined:
+                pipe_at = end
+                for k in range(i, end + 1):
+                    if "|" in spans[k]["text"]:
+                        pipe_at = k
+                        break
+                nxt = _next_same_line(spans, pipe_at)
+                if nxt is not None and re.search(r"WE\.\d+|\S", nxt["text"] or ""):
+                    nxt2 = _next_same_line(spans, pipe_at + 1)
+                    return _span_field(nxt, next_sp=nxt2, max_x1=panel_right)
+                break
+            if end + 1 >= len(spans):
+                break
+            nxt = spans[end + 1]
+            if abs(nxt["bbox"][1] - sp["bbox"][1]) >= 4:
+                break
+            end += 1
+            joined += nxt["text"]
     return None
 
 
@@ -237,11 +273,48 @@ def _guest_quote_field(num_sp, guests_sp):
     )
 
 
+def _expand_cover_field(
+    field: dict,
+    panel_right: float,
+    *,
+    min_width: float,
+    max_width_cap: float | None = None,
+) -> dict:
+    """
+    Placeholder spans in template PDFs are short (e.g. 'Sarah Prentice').
+    Expand the editable box to the full panel width so real lead data keeps
+    the designed 4.63pt size instead of shrinking.
+    """
+    if not field:
+        return field
+    f = dict(field)
+    x0, y0, x1, y1 = f["bbox"]
+    cap = round(panel_right - 2.0, 1)
+    if max_width_cap is not None:
+        cap = min(cap, round(x0 + max_width_cap, 1))
+    new_x1 = min(cap, max(x1, round(x0 + min_width, 1)))
+    f["bbox"] = (x0, y0, new_x1, y1)
+    f["max_width"] = round(max(new_x1 - x0, 1.0), 1)
+    return f
+
+
+def _same_line_label_cap(spans, i: int, panel_right: float) -> float | None:
+    """If the next same-line span is a label fragment (e.g. '| Client'), cap before it."""
+    nxt = _next_same_line(spans, i)
+    if nxt is None:
+        return panel_right
+    t = (nxt.get("text") or "").strip().lower()
+    if t.startswith("|") or t.startswith("client") or t.startswith("relationship"):
+        return max(spans[i]["bbox"][0] + 8.0, nxt["bbox"][0] - 1.0)
+    return panel_right
+
+
 def measure_cover(page) -> dict:
     spans = _spans(page)
     fields = {}
     RIGHT_PANEL = 467.0
-    LEFT_PANEL = 338.0
+    # Left info panel stroke ends ~344pt; keep 2pt inset so one-line values fit.
+    LEFT_PANEL = 342.0
 
     # "No. of guests" is often split across spans ("No. " / "o" / "f guests |")
     label_map = {
@@ -254,6 +327,7 @@ def measure_cover(page) -> dict:
         "event_date": (["Event date requested"], RIGHT_PANEL),
         "event_timings": (["Event timings"], RIGHT_PANEL),
         "guest_range": (["No. of guests", "f guests |", "guests |"], RIGHT_PANEL),
+        "key_items": (["Key items", "Key Items", "What's included"], RIGHT_PANEL),
     }
     for key, (labels, panel) in label_map.items():
         for label in labels:
@@ -262,58 +336,97 @@ def measure_cover(page) -> dict:
                 fields[key] = found
                 break
 
-    # Prepared by — handle both split and combined spans; don't collide with quote_date
+    # Fallback: WE.#### in the left cover panel when Proposal/Quotation Ref is glyph-split
+    if "proposal_ref" not in fields:
+        for i, sp in enumerate(spans):
+            if not re.search(r"WE\.\d{3,5}", sp.get("text") or ""):
+                continue
+            x0, y0 = sp["bbox"][0], sp["bbox"][1]
+            if 220 < x0 < 340 and y0 < 55:
+                nxt = _next_same_line(spans, i)
+                fields["proposal_ref"] = _span_field(sp, next_sp=nxt, max_x1=LEFT_PANEL)
+                break
+
+    # Prepared by — gold layout is TWO lines (not one):
+    #   Line 1: "Prepared by {NAME} |" (bold) + " Client" (regular)
+    #   Line 2: "Relationship Manager/Coordinator" (regular)
+    # Measure anchors so fill can wipe the variable band and redraw like the gold PDF.
     for i, sp in enumerate(spans):
         text = sp["text"]
         low = text.lower()
         if "prepared by" not in low:
             continue
 
-        # Combined: 'Prepared by Katherine Bulaon |'
-        if "|" in text:
-            m = re.search(r"prepared by\s+(.+?)\s*\|", text, re.I)
-            if m:
-                full = fitz.Rect(sp["bbox"])
-                pre = "Prepared by "
-                ratio0 = len(pre) / max(len(text), 1)
-                ratio1 = text.lower().find("|") / max(len(text), 1)
-                if ratio1 <= 0:
-                    ratio1 = 1.0
-                x0 = full.x0 + full.width * ratio0
-                x1 = full.x0 + full.width * ratio1
-                if LEFT_PANEL > x0:
-                    x1 = min(x1, LEFT_PANEL)
-                fields["prepared_by"] = dict(
-                    bbox=(round(x0, 1), round(full.y0, 1), round(x1, 1), round(full.y1, 1)),
-                    origin=(round(x0, 1), round(sp["origin"][1], 1)),
-                    size=round(sp["size"], 2),
-                    bold=True,
-                    max_width=round(max(x1 - x0, 1.0), 1),
-                    color=_span_color(sp),
-                )
-                break
+        size = round(sp["size"], 2)
+        color = _span_color(sp)
+        y0 = sp["bbox"][1]
+        y1 = sp["bbox"][3]
+        origin_y = sp["origin"][1]
+        label_x0 = sp["bbox"][0]
 
-        # Split: 'Prepared by ' + 'Katherine Bulaon' + ' |'
+        # End of the static "Prepared by " label
         if text.strip().lower() in ("prepared by", "prepared by "):
-            months = (
-                "January", "February", "March", "April", "May", "June",
-                "July", "August", "September", "October", "November", "December",
+            name_x0 = sp["bbox"][2]
+        else:
+            m = re.search(r"prepared by\s*", text, re.I)
+            if not m:
+                continue
+            full = fitz.Rect(sp["bbox"])
+            name_x0 = full.x0 + full.width * (m.end() / max(len(text), 1))
+
+        client_x0 = None
+        role_bbox = None
+        for sp2 in spans:
+            t2 = (sp2.get("text") or "").strip()
+            t2l = t2.lower()
+            if sp2["bbox"][0] >= LEFT_PANEL:
+                continue
+            if not (y0 - 1.0 <= sp2["bbox"][1] <= y0 + 12.0):
+                continue
+            if t2l.strip() in ("client",) or t2l.strip().startswith("client"):
+                # " Client " on the first line after the pipe
+                if abs(sp2["bbox"][1] - y0) < 3.5:
+                    client_x0 = sp2["bbox"][0]
+                    y1 = max(y1, sp2["bbox"][3])
+            if "relationship" in t2l:
+                role_bbox = tuple(round(x, 1) for x in sp2["bbox"])
+                y1 = max(y1, sp2["bbox"][3])
+
+        x1 = LEFT_PANEL - 0.5
+        if role_bbox is None:
+            role_bbox = (
+                round(label_x0, 1),
+                round(y0 + 9.0, 1),
+                round(min(x1, label_x0 + 60.0), 1),
+                round(y0 + 16.0, 1),
             )
-            for j in range(i + 1, min(i + 4, len(spans))):
-                cand = spans[j]
-                t = cand["text"].strip()
-                if t.startswith("|") or t.lower().startswith("client") or t.lower().startswith("relationship"):
-                    continue
-                # skip dates so we don't collide with quote_date
-                if any(m in t for m in months):
-                    continue
-                if len(t) >= 4:
-                    nxt2 = spans[j + 1] if j + 1 < len(spans) else None
-                    f = _span_field(cand, next_sp=nxt2, max_x1=LEFT_PANEL)
-                    f["bold"] = True
-                    fields["prepared_by"] = f
-                    break
-            break
+        else:
+            # Widen role box to panel so "Relationship Coordinator" keeps 4.63pt.
+            role_bbox = (role_bbox[0], role_bbox[1], round(x1, 1), role_bbox[3])
+        fields["prepared_by"] = dict(
+            # Wipe from name start across line 1; role line needs a full-width extra wipe
+            # because it starts under the static "Prepared by" label.
+            bbox=(round(name_x0, 1), round(y0 - 0.3, 1), round(x1, 1), round(y0 + 7.2, 1)),
+            origin=(round(name_x0, 1), round(origin_y, 1)),
+            size=size,
+            bold=True,
+            max_width=round(max(x1 - name_x0, 1.0), 1),
+            color=color,
+            label_x0=round(label_x0, 1),
+            name_x0=round(name_x0, 1),
+            role_bbox=role_bbox,
+            role_origin=(round(role_bbox[0], 1), round(role_bbox[3] - 0.8, 1)),
+            extra_redacts=[
+                (
+                    round(label_x0 - 0.5, 1),
+                    round(role_bbox[1] - 0.4, 1),
+                    round(x1, 1),
+                    round(role_bbox[3] + 0.4, 1),
+                )
+            ],
+            layout="gold_prepared_by",
+        )
+        break
 
     # Quote date: left-panel date like "27 January 2026" (NOT weekday event dates)
     months = (
@@ -362,6 +475,36 @@ def measure_cover(page) -> dict:
         x1 = min(RIGHT_PANEL, x0 + 28.0)
         gr["bbox"] = (x0, y0, x1, y1)
         gr["max_width"] = round(x1 - x0, 1)
+
+    # Expand value boxes to full panel width (fixes short placeholder spans).
+    left_expand = {
+        "client_name": 76.0,
+        "organisation": 76.0,
+        "telephone": 70.0,
+        "email": 92.0,
+    }
+    for key, min_w in left_expand.items():
+        if key in fields:
+            fields[key] = _expand_cover_field(fields[key], LEFT_PANEL, min_width=min_w)
+
+    if "proposal_ref" in fields:
+        fields["proposal_ref"] = _expand_cover_field(
+            fields["proposal_ref"], LEFT_PANEL, min_width=48.0, max_width_cap=56.0,
+        )
+    # prepared_by already spans nearly full panel (name + title on one line)
+    if "quote_date" in fields:
+        fields["quote_date"] = _expand_cover_field(
+            fields["quote_date"], LEFT_PANEL, min_width=36.0, max_width_cap=72.0,
+        )
+
+    right_expand = {
+        "event_type": 78.0,
+        "event_date": 58.0,
+        "event_timings": 72.0,
+    }
+    for key, min_w in right_expand.items():
+        if key in fields:
+            fields[key] = _expand_cover_field(fields[key], RIGHT_PANEL, min_width=min_w)
 
     return fields
 
@@ -699,7 +842,8 @@ def measure_template(template_path: str) -> TemplateProfile:
         doc.close()
 
 
-# In-process + on-disk profile cache (measurement is the slow part)
+# Bump when measure_cover / contact rules change (invalidates disk profile cache).
+MEASURE_SCHEMA_VERSION = 7
 _PROFILE_CACHE: dict[str, TemplateProfile] = {}
 _DISK_CACHE_DIR = Path(__file__).resolve().parent / "assets" / "templates" / "catalog" / ".profile_cache"
 
@@ -748,7 +892,7 @@ def _disk_cache_path(template_path: str) -> Path:
         mtime = int(Path(template_path).stat().st_mtime)
     except OSError:
         mtime = 0
-    return _DISK_CACHE_DIR / f"{digest}_{mtime}.json"
+    return _DISK_CACHE_DIR / f"{digest}_{mtime}_v{MEASURE_SCHEMA_VERSION}.json"
 
 
 def get_profile(template_path: str, *, force: bool = False) -> TemplateProfile:

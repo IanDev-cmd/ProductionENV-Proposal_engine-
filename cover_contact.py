@@ -11,11 +11,13 @@ import re
 
 import config
 from pdf_ops import prepare_field_draw, draw_fields_batched
+from fonts import ValidationWarning
 
 _log = logging.getLogger("weott.cover_contact")
 
 
 def _parse_iso_datetime(raw: str):
+    """Prefer ISO-8601 from the API. Returns datetime or None."""
     s = raw.strip()
     if not s:
         return None
@@ -40,23 +42,28 @@ def _ordinal(n: int) -> str:
     return _ORDINAL.get(n % 10, "th")
 
 
-def format_event_date(value: str) -> str:
+def format_event_date(value: str, *, date_flexible: bool | None = None) -> str:
     if value is None:
         return ""
     raw = str(value).strip()
     if not raw:
         return ""
-    if re.match(r"^(date\s*)?tbc$", raw, re.I) or raw.upper() == "TBC":
+    # Pure TBC (no calendar date) → Date TBC
+    if re.match(r"^(date\s*)?tbc$", raw, re.I):
         return "Date TBC"
 
-    flexible = bool(
-        re.search(r"(?i)(?:\n\s*tbc\s*$|\(date\s*tbc\)|\(tbc\)|\bflexible\b)", raw)
-    ) or bool(re.search(r"(?i)\btbc\b", raw))
+    if date_flexible is True:
+        flexible = True
+    elif date_flexible is False:
+        flexible = False
+    else:
+        flexible = bool(re.search(r"(?i)\n\s*tbc\s*$", raw))
 
     date_part = re.sub(r"(?i)\s*\n\s*tbc\s*$", "", raw)
     date_part = re.sub(r"(?i)\s*\(date\s*tbc\)\s*", "", date_part)
     date_part = re.sub(r"(?i)\s*\(tbc\)\s*", "", date_part)
     date_part = re.sub(r"(?i)\s*\bflexible\b\s*", "", date_part).strip()
+    # Bare trailing / standalone TBC left after stripping wrappers
     date_part = re.sub(r"(?i)\s*\btbc\b\s*$", "", date_part).strip()
 
     if not date_part or re.match(r"^(date\s*)?tbc$", date_part, re.I):
@@ -92,6 +99,7 @@ def format_event_date_compact(value: str) -> str:
         return raw
     flexible = "\nTBC" in raw
     date_only = raw.replace("\nTBC", "").strip()
+    # Try parse back from house style or ISO
     source = str(value).strip().split("\n")[0]
     source = re.sub(r"(?i)\s*\(date\s*tbc\)\s*", "", source).strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
@@ -101,6 +109,7 @@ def format_event_date_compact(value: str) -> str:
             return f"{compact}\nTBC" if flexible else compact
         except ValueError:
             continue
+    # From already-formatted long date: Tuesday 14th July 2026 -> Tue 14th Jul 2026
     m = re.match(
         r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})(st|nd|rd|th)\s+"
         r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})",
@@ -167,6 +176,59 @@ def format_guest_range(value) -> str:
     if m:
         return f"{m.group(1)} \u2013 {m.group(2)}"
     return raw
+
+
+def format_organisation(value: str, *, font_mgr=None, max_width: float | None = None, base_size: float = 4.63) -> str:
+    """House-style abbreviations so long company names stay at template point size."""
+    s = str(value or "").strip()
+    if not s:
+        return s
+    s = re.sub(r"\bLimited\b", "Ltd", s, flags=re.I)
+    s = re.sub(r"\bIncorporated\b", "Inc", s, flags=re.I)
+    s = re.sub(r"\s*\(\s*T/A\s+", " (t/a ", s, flags=re.I)
+    if font_mgr is not None and max_width:
+        bold = False
+        while font_mgr.text_length(s, base_size, bold) > max_width:
+            if re.search(r"\([^)]+\)", s):
+                s = re.sub(r"\s*\([^)]*\)\s*", "", s).strip()
+                continue
+            if " / " in s:
+                s = s.split(" / ", 1)[0].strip()
+                continue
+            break
+    return s
+
+
+def format_event_type(value: str, *, font_mgr=None, max_width: float | None = None, base_size: float = 4.63) -> str:
+    """Long catalogue event names must not shrink on the cover panel."""
+    s = str(value or "").strip()
+    if not s or font_mgr is None or not max_width:
+        return s
+    if font_mgr.text_length(s, base_size, False) <= max_width:
+        return s
+    if " or " in s:
+        first = s.split(" or ", 1)[0].strip()
+        if font_mgr.text_length(first, base_size, False) <= max_width:
+            return first
+    if " / " in s:
+        first = s.split(" / ", 1)[0].strip()
+        if font_mgr.text_length(first, base_size, False) <= max_width:
+            return first
+    return s
+
+
+def format_cover_email(value: str, *, font_mgr=None, max_width: float | None = None, base_size: float = 4.63) -> str:
+    """Dual emails: keep first address if pair won't fit at designed size."""
+    s = str(value or "").strip()
+    if not s or font_mgr is None or not max_width:
+        return s
+    if font_mgr.text_length(s, base_size, False) <= max_width:
+        return s
+    if " / " in s:
+        first = s.split(" / ", 1)[0].strip()
+        if font_mgr.text_length(first, base_size, False) <= max_width:
+            return first
+    return s
 
 
 _PHONE_PLACEHOLDERS = {"", "—", "-", "–", "n/a", "na", "none", "tbc"}
@@ -286,26 +348,58 @@ _STAFF_FULL_NAMES = {
 }
 
 
-def format_prepared_by_name(raw: str) -> str:
-    s = re.sub(r"^\s*prepared\s+by\s+", "", str(raw or "").strip(), flags=re.I).strip()
-    if "|" in s:
-        s = s.split("|", 1)[0].strip()
-    s = " ".join(s.split())
-    key = s.lower()
+def format_prepared_by_name(lead: dict) -> str:
+    """REP name with surname — gold keeps '| Client' + role on the template lines."""
+    raw = str(lead.get("prepared_by") or "").strip()
+    if not raw:
+        return ""
+    raw = re.sub(r"^\s*prepared\s+by\s+", "", raw, flags=re.I).strip()
+    if "|" in raw:
+        raw = raw.split("|", 1)[0].strip()
+    raw = " ".join(raw.split())
+    key = raw.lower()
     if key in _STAFF_FULL_NAMES:
         return _STAFF_FULL_NAMES[key]
     first = key.split()[0] if key else ""
-    if first in _STAFF_FULL_NAMES and " " not in s:
+    if first in _STAFF_FULL_NAMES and " " not in raw:
         return _STAFF_FULL_NAMES[first]
-    return s
+    return raw
+
+
+def format_prepared_by_role(lead: dict) -> str:
+    """
+    Second cover line under Prepared by (regular weight), matching gold:
+    'Relationship Manager' / 'Relationship Coordinator'.
+    """
+    title = str(lead.get("contact_title") or "").strip()
+    if not title:
+        raw = str(lead.get("prepared_by") or "")
+        if "|" in raw:
+            title = raw.split("|", 1)[1].strip()
+    if not title:
+        title = "Client Relationship Manager"
+    title = re.sub(r"^\s*prepared\s+by\s+", "", title, flags=re.I).strip()
+    # Gold drops the leading 'Client ' — that stays on line 1 after the pipe.
+    title = re.sub(r"^\s*client\s+", "", title, flags=re.I).strip()
+    return " ".join(title.split()) or "Relationship Manager"
+
+
+def format_prepared_by(lead: dict) -> str:
+    """Back-compat: name only for cover prepared_by field."""
+    return format_prepared_by_name(lead)
 
 
 def normalize_cover_lead(lead: dict) -> dict:
     out = dict(lead)
-    if "prepared_by" in out:
-        out["prepared_by"] = format_prepared_by_name(out.get("prepared_by") or "")
+    if "prepared_by" in out or lead.get("contact_title"):
+        if "prepared_by" in out or lead.get("prepared_by"):
+            out["prepared_by"] = format_prepared_by_name(out if "prepared_by" in out else lead)
+        out["prepared_by_role"] = format_prepared_by_role(out)
     if "event_date" in out:
-        out["event_date"] = format_event_date(out["event_date"])
+        out["event_date"] = format_event_date(
+            out["event_date"],
+            date_flexible=lead.get("date_flexible"),
+        )
     if "event_timings" in out:
         original = str(lead.get("event_timings", ""))
         formatted = format_event_timings(original, include_tbc=False)
@@ -329,30 +423,157 @@ def normalize_cover_lead(lead: dict) -> dict:
         out["guest_range"] = format_guest_range(out["guest_range"])
     if "guest_quote_n" in out:
         out["guest_quote_n"] = str(out["guest_quote_n"]).strip()
+    if out.get("key_items"):
+        out["key_items"] = " ".join(str(out["key_items"]).split())
     return out
+
+
+def _fit_cover_value(field_name: str, value: str, spec: dict, font_mgr) -> str:
+    """Apply compact formatters before draw so cover stays at template point size."""
+    base_size = spec.get("size", 4.63)
+    max_w = spec.get("max_width", 56)
+    if field_name == "organisation":
+        return format_organisation(value, font_mgr=font_mgr, max_width=max_w, base_size=base_size)
+    if field_name == "email":
+        return format_cover_email(value, font_mgr=font_mgr, max_width=max_w, base_size=base_size)
+    if field_name == "event_type":
+        return format_event_type(value, font_mgr=font_mgr, max_width=max_w, base_size=base_size)
+    if field_name == "key_items":
+        raw = " ".join(str(value).split())
+        if font_mgr.text_length(raw, base_size, False) <= max_w:
+            return raw
+        # Keep one line at designed size — ellipsis rather than shrinking cover type.
+        ell = "…"
+        cut = raw
+        while cut and font_mgr.text_length(cut + ell, base_size, False) > max_w:
+            cut = cut[:-1]
+        return (cut + ell) if cut else raw[:40]
+    if field_name == "client_name" and " / " in value:
+        parts = [p.strip() for p in value.split(" / ") if p.strip()]
+        if len(parts) == 2 and font_mgr.text_length(value, base_size, False) > max_w:
+            shorter = f"{parts[0]} & {parts[1]}"
+            if font_mgr.text_length(shorter, base_size, False) <= max_w:
+                return shorter
+    return value
+
+
+def _prepare_gold_prepared_by(spec: dict, data: dict, font_mgr, warnings: list) -> list:
+    """
+    Match gold PDF typography:
+      Prepared by {NAME} | Client     <- name+pipe bold (deep_bold), Client regular
+      Relationship Coordinator        <- regular, second line
+    """
+    color = _cover_ink_from_template(spec.get("color"))
+    size = float(spec.get("size") or 4.63)
+    name = format_prepared_by_name(data)
+    role = format_prepared_by_role(data)
+    if not name:
+        return []
+
+    x0, y = spec["origin"]
+    max_w = float(spec.get("max_width") or 120)
+    client = " Client"
+    pipe = " |"
+
+    # Fit name so "NAME | Client" stays on line 1 at designed size when possible.
+    def line1_width(sz):
+        return (
+            font_mgr.text_length(name, sz, False)
+            + font_mgr.text_length(pipe, sz, False)
+            + font_mgr.text_length(client, sz, False)
+        )
+
+    draw_size = size
+    while draw_size > 2.8 and line1_width(draw_size) > max_w:
+        draw_size = round(draw_size - 0.1, 1)
+    if draw_size < size * 0.72:
+        warnings.append(
+            ValidationWarning(
+                field="prepared_by",
+                message=f"prepared_by shrunk from {size}pt to {draw_size}pt to fit gold line-1 layout.",
+            )
+        )
+
+    items = []
+    # Primary redact covers name + Client + role line.
+    bold_spec = dict(
+        bbox=spec["bbox"],
+        origin=(x0, y),
+        size=draw_size,
+        bold=False,
+        deep_bold=True,
+        color=color,
+        max_width=max_w,
+        extra_redacts=list(spec.get("extra_redacts") or []),
+    )
+    items.append(prepare_field_draw(bold_spec, f"{name}{pipe}", font_mgr, warnings, "prepared_by"))
+
+    # Draw the divider as its own run so surnames cannot clip the dash.
+
+    name_w = font_mgr.text_length(name, draw_size, False)
+    pipe_w = font_mgr.text_length(pipe, draw_size, False)
+    client_x = x0 + name_w + pipe_w
+    client_spec = dict(
+        bbox=spec["bbox"],  # already redacted via first item
+        origin=(client_x, y),
+        size=draw_size,
+        bold=False,
+        deep_bold=False,
+        color=color,
+        max_width=max(max_w - (client_x - x0), 8.0),
+        skip_redact=True,
+    )
+    items.append(prepare_field_draw(client_spec, client, font_mgr, warnings, "prepared_by_client"))
+
+    role_origin = spec.get("role_origin") or (spec.get("label_x0", x0), y + 7.0)
+    role_bbox = spec.get("role_bbox") or spec["bbox"]
+    role_spec = dict(
+        bbox=role_bbox,
+        origin=role_origin,
+        size=size,  # role stays at template size (gold 4.63)
+        bold=False,
+        deep_bold=False,
+        color=color,
+        max_width=max(float(role_bbox[2]) - float(role_bbox[0]), 20.0),
+        skip_redact=True,
+    )
+    items.append(prepare_field_draw(role_spec, role, font_mgr, warnings, "prepared_by_role"))
+    return items
 
 
 def fill_cover_page(doc, data: dict, font_mgr, warnings: list, profile=None):
     page_index = profile.page_cover if profile else config.PAGE_COVER
-    fields = profile.cover_fields if profile and profile.cover_fields else config.COVER_FIELDS
+    fields = dict(profile.cover_fields) if profile and profile.cover_fields else dict(config.COVER_FIELDS)
+    if "key_items" not in fields and config.COVER_FIELDS.get("key_items"):
+        fields["key_items"] = dict(config.COVER_FIELDS["key_items"])
     page = doc[page_index]
     font_mgr.ensure_registered(page)
     data = normalize_cover_lead(data)
 
     prepared = []
     for field_name, spec in fields.items():
-        if field_name not in data or not spec:
+        if not spec:
+            continue
+        if field_name == "prepared_by" and spec.get("layout") == "gold_prepared_by":
+            if not data.get("prepared_by"):
+                continue
+            prepared.extend(_prepare_gold_prepared_by(dict(spec), data, font_mgr, warnings))
+            continue
+        if field_name not in data:
             continue
         value = str(data[field_name])
+        value = _fit_cover_value(field_name, value, spec, font_mgr)
         # If event_date won't fit at designed size, use compact form before shrink
         tbc_under = False
         if field_name == "event_date":
             if "\n" in value:
                 parts = value.split("\n", 1)
                 value = parts[0].strip()
-                tbc_under = "TBC" in parts[1].upper()
+                tbc_under = parts[1].strip().upper() == "TBC" or "TBC" in parts[1].upper()
             max_w = spec.get("max_width", 56)
-            if font_mgr.text_length(value, spec["size"], spec.get("bold", False)) > max_w:
+            # Measure date line only (TBC draws underneath)
+            measure_src = value
+            if font_mgr.text_length(measure_src, spec["size"], spec.get("bold", False)) > max_w:
                 compact = format_event_date_compact(data[field_name])
                 if "\n" in compact:
                     cparts = compact.split("\n", 1)
@@ -364,6 +585,8 @@ def fill_cover_page(doc, data: dict, font_mgr, warnings: list, profile=None):
         # span colour + Century Gothic only. Page-13 pure-white / Fallback-Bold
         # styling must not leak onto the cover.
         spec = dict(spec)
+        if field_name == "key_items":
+            spec["color"] = config.TEXT_COLOR
         spec["color"] = _cover_ink_from_template(spec.get("color"))
         # Keep brand CG on cover even for "bold" fields (template-extracted CG
         # Bold subsets can't re-embed; Fallback Bold reads as a different face).
@@ -393,25 +616,37 @@ def fill_cover_page(doc, data: dict, font_mgr, warnings: list, profile=None):
 
 def _cover_ink_from_template(color) -> tuple:
     """
-    Cover ink must match the template PDF, not Page-13 pure white.
+    Cover panel ink must match the template / gold PDFs.
 
-    Catalog templates store panel copy as RGB(230,242,243). Re-inserting with
-    that exact triplet keeps edited values identical to static labels.
+    Wedding/corporate cover panels use dark gray RGB(50,50,50) on the frosted
+    boxes — not Page-13 pure white and not the older near-white COVER_TEXT_COLOR.
     """
     if color and isinstance(color, (tuple, list)) and len(color) >= 3:
         return (float(color[0]), float(color[1]), float(color[2]))
-    # Same triplet measured from assets/templates/catalog/**/template.pdf covers
-    return (230 / 255, 242 / 255, 243 / 255)
+    return (50 / 255, 50 / 255, 50 / 255)
 
 
-def fill_contact_page(doc, data: dict, font_mgr, warnings: list, profile=None):
+def fill_contact_page(doc, data: dict, font_mgr, warnings: list, profile=None, page_shift: int = 0):
     fields = profile.contact_fields if profile and profile.contact_fields else config.CONTACT_FIELDS
     # Group by page for batched apply
     by_page: dict[int, list] = {}
+    shift = int(page_shift or 0)
     for field_name, spec in fields.items():
         if field_name not in data or not spec:
             continue
-        page_i = spec.get("page", profile.page_contact if profile else config.PAGE_CONTACT)
+        page_i = int(spec.get("page", profile.page_contact if profile else config.PAGE_CONTACT)) + shift
+        if page_i < 0 or page_i >= doc.page_count:
+            warnings.append(
+                type(
+                    "ValidationWarning",
+                    (),
+                    {
+                        "field": field_name,
+                        "message": f"Contact page index {page_i} out of range after overflow shift {shift}",
+                    },
+                )()
+            )
+            continue
         value = str(data[field_name])
         if field_name == "contact_email":
             value = re.sub(r"^\s*E:\s*", "", value, flags=re.I)

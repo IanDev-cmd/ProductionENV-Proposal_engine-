@@ -45,10 +45,13 @@ def render_financials(doc: "fitz.Document", calculations: dict, font_mgr, warnin
     draw_fields_batched(page, prepared, font_mgr, clear_graphics=False)
 
 
-def _money(value) -> str:
-    if value is None:
+def _money(value) -> str | None:
+    if value is None or value == "":
         return None
-    return f"{float(value):,.2f}"
+    try:
+        return f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return None
 
 
 def render_upgrade_list(doc: "fitz.Document", selected_upgrades, font_mgr, warnings: list, profile=None):
@@ -81,19 +84,7 @@ def render_package_columns(doc: "fitz.Document", package_wording: dict, font_mgr
     if not any_groups:
         return False
 
-    all_named = all(package_wording.get(col_cfg["name"]) for col_cfg in columns)
-    if all_named:
-        redact_zone(page13, clear_zone, clear_graphics=True)
-    else:
-        for col_cfg in columns:
-            groups = package_wording.get(col_cfg["name"], [])
-            if not groups:
-                continue
-            x0 = float(col_cfg["x"]) - 1.5
-            y0 = float(clear_zone[1])
-            x1 = float(col_cfg["x"]) + float(col_cfg["width"]) + 4.0
-            y1 = float(col_cfg["max_y"]) + 1.0
-            redact_zone(page13, (x0, y0, x1, y1), clear_graphics=True)
+    redact_zone(page13, clear_zone, clear_graphics=True)
 
     for col_cfg in columns:
         groups = package_wording.get(col_cfg["name"], [])
