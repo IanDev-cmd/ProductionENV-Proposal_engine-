@@ -111,6 +111,7 @@ def build_proposal(payload: dict, template_path: str | None, output_path: str) -
         apply_menu_links(doc, menu_links, warnings, profile=profile)
 
     fill_contact_page(doc, lead, font_mgr, warnings, profile=profile)
+    validate_render_warnings(warnings, lead=lead)
 
     insert_report = {"applied": [], "requested": [], "resolved": 0}
     if selected_inserts:
