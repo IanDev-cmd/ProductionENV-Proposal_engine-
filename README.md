@@ -29,10 +29,10 @@ Render service should serve at **https://weott-proposal-engine.onrender.com**.
 
 ## n8n
 
-Live instance: `https://prometheus5.app.n8n.cloud`  
+Live instance: `https://harmony9.app.n8n.cloud` (`0b033e4dea3e06f7022fa976138770d89a94a569a45a7883de93bf9335d36920`)  
 `QuoteBuilder` HTTP Request node → `POST https://weott-proposal-engine.onrender.com/generate`
 
 Credentials bound on that n8n instance:
 
-- `googlePalmApi` `zvFDkn9Cp7SqbA1q` — Google Gemini(PaLM) Api account
-- `googleSheetsOAuth2Api` `9DvsM5k7IUgWQ5Bf` — Google Sheets account
+- `googlePalmApi` `dlay23hFXEWTtpXH` — Google Gemini(PaLM) Api account
+- `googleSheetsOAuth2Api` `GZhF0w9mcVHkFaHo` — Google Sheets account
