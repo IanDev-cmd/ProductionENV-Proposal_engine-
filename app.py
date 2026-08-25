@@ -24,6 +24,16 @@ from pathlib import Path
 from flask import Flask, request, send_file, jsonify
 
 from engine import build_proposal
+from workspace_store import (
+    delete_proposal as workspace_delete_proposal,
+    delete_quote as workspace_delete_quote,
+    get_proposal as workspace_get_proposal,
+    get_quote as workspace_get_quote,
+    list_proposals as workspace_list_proposals,
+    list_quotes as workspace_list_quotes,
+    put_proposal as workspace_put_proposal,
+    put_quote as workspace_put_quote,
+)
 from catalog import get_catalog
 from measure import warm_profiles, clear_profile_cache
 from inserts import get_insert_manifest, list_inserts
@@ -32,6 +42,7 @@ from payload_schema import GeneratePayload, validation_error_body
 from pydantic import ValidationError
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 _BASE = Path(__file__).resolve().parent
 
 _CORS_HEADERS = (
@@ -53,7 +64,7 @@ def _cors_preflight():
 def _cors(resp):
     origin = request.headers.get("Origin") or "*"
     resp.headers["Access-Control-Allow-Origin"] = origin
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, PUT, POST, DELETE, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = _CORS_HEADERS[0]
     resp.headers["Access-Control-Expose-Headers"] = _CORS_EXPOSE
     resp.headers["Access-Control-Max-Age"] = "86400"
@@ -187,6 +198,68 @@ def generate():
     response.headers["X-Template-Matched-By"] = str(report.get("template_matched_by") or "")
     response.headers["X-Inserts"] = json.dumps(report.get("inserts") or {})
     return response
+
+
+@app.get("/workspace/quotes")
+def workspace_quotes_list():
+    return jsonify(quotes=workspace_list_quotes())
+
+
+@app.get("/workspace/quotes/<quote_id>")
+def workspace_quotes_get(quote_id):
+    row = workspace_get_quote(quote_id)
+    if not row:
+        return jsonify(error="Not found"), 404
+    return jsonify(row)
+
+
+@app.put("/workspace/quotes/<quote_id>")
+def workspace_quotes_put(quote_id):
+    payload = request.get_json(force=True, silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="Request body must be valid JSON"), 400
+    payload["id"] = str(payload.get("id") or quote_id)
+    try:
+        saved = workspace_put_quote(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, quote=saved)
+
+
+@app.delete("/workspace/quotes/<quote_id>")
+def workspace_quotes_delete(quote_id):
+    return jsonify(ok=workspace_delete_quote(quote_id))
+
+
+@app.get("/workspace/proposals")
+def workspace_proposals_list():
+    return jsonify(proposals=workspace_list_proposals(include_pdf=False))
+
+
+@app.get("/workspace/proposals/<proposal_id>")
+def workspace_proposals_get(proposal_id):
+    row = workspace_get_proposal(proposal_id)
+    if not row:
+        return jsonify(error="Not found"), 404
+    return jsonify(row)
+
+
+@app.put("/workspace/proposals/<proposal_id>")
+def workspace_proposals_put(proposal_id):
+    payload = request.get_json(force=True, silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="Request body must be valid JSON"), 400
+    payload["id"] = str(payload.get("id") or proposal_id)
+    try:
+        saved = workspace_put_proposal(payload)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(ok=True, proposal={k: v for k, v in saved.items() if k != "pdfDataUrl"})
+
+
+@app.delete("/workspace/proposals/<proposal_id>")
+def workspace_proposals_delete(proposal_id):
+    return jsonify(ok=workspace_delete_proposal(proposal_id))
 
 
 if __name__ == "__main__":
